@@ -1,0 +1,15 @@
+[
+  {
+    "duration_seconds": 30,
+    "elapsed_seconds": 30.0,
+    "correct_chars": 124,
+    "incorrect_chars": 19,
+    "total_keystrokes": 191,
+    "words_completed": 26,
+    "wpm": 49.6,
+    "raw_wpm": 57.2,
+    "accuracy": 0.8671,
+    "timestamp": 1772660683.8499007,
+    "game_mode": "monkeytype"
+  }
+]
