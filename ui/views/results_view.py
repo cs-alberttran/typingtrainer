@@ -116,7 +116,7 @@ class ResultsView(tk.Frame):
             var = tk.StringVar(value="")
             self._stat_rows.append((label, var))
             row = tk.Frame(stats_panel, bg=BG_PANEL)
-            row.pack(fill=tk.X, padx=16, pady=2)
+            row.pack(anchor = "center", pady=2)
             tk.Label(
                 row,
                 text=label,

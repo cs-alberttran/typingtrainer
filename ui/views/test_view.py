@@ -13,9 +13,9 @@ Architecture notes:
 
 from __future__ import annotations
 
+import random
 import tkinter as tk
 from typing import TYPE_CHECKING, Optional
-
 from ui.widgets.keyboard_heatmap import KeyboardHeatmap
 
 from config import (
@@ -62,6 +62,7 @@ class TestView(tk.Frame):
         self._app = master
         self._timer_id: Optional[str] = None
         self._selected_duration: tk.IntVar = tk.IntVar(value=DEFAULT_DURATION)
+        self._hard_mode: bool = False
         self._dur_buttons: dict[int, tk.Button] = {}
         self._build_ui()
 
@@ -120,6 +121,35 @@ class TestView(tk.Frame):
             bg=BG_MAIN,
             fg=FG_MUTED,
         ).pack(side=tk.RIGHT, padx=(0, 4))
+
+        tk.Label(
+            stats_bar,
+            text=" Ctrl + R ",
+            font=(FONT_UI, 8),
+            bg=BG_MAIN,
+            fg=FG_MUTED,
+            anchor="center",
+            padx=4,
+            pady=2,
+            relief=tk.FLAT,
+            cursor="arrow",
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
+        # ---- Hard Mode button --------------------------------------
+        self._hard_btn = tk.Button(
+            stats_bar,
+            text="Hard Mode",
+            font=(FONT_UI, FONT_BUTTON_SIZE - 1),
+            relief=tk.RAISED,
+            bd=BD,
+            cursor="hand2",
+            padx=6,
+            pady=1,
+            bg=BG_PANEL,
+            fg=FG_DEFAULT,
+            command=self._on_hard_mode_toggle,
+        )
+        self._hard_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
         # ---- Duration chips -----------------------------------------
         dur_frame = tk.Frame(stats_bar, bg=BG_PANEL, relief=tk.SUNKEN,
@@ -235,6 +265,17 @@ class TestView(tk.Frame):
     # Duration selection
     # ------------------------------------------------------------------
 
+    def _on_hard_mode_toggle(self) -> None:
+        """Toggle hard mode on/off and restart the session."""
+        if hasattr(self, "_engine") and self._engine.state == TestState.RUNNING:
+            return
+        self._hard_mode = not self._hard_mode
+        if self._hard_mode:
+            self._hard_btn.configure(bg=ACCENT, fg="#ffffff", relief=tk.SUNKEN)
+        else:
+            self._hard_btn.configure(bg=BG_PANEL, fg=FG_DEFAULT, relief=tk.RAISED)
+        self.on_show()
+
     def _on_duration_select(self, duration: int) -> None:
         """Called when the user clicks a duration chip."""
         from domain.models import TestState  # already imported at module level
@@ -270,6 +311,9 @@ class TestView(tk.Frame):
         self._word_chars: list[tuple[str, str]] = []  # (start_idx, end_idx) per word char
         self._word_positions: list[tuple[str, str]] = []  # (word_start, word_end) per word
 
+        if self._hard_mode:
+            self._apply_hard_mode(self._engine)
+
         self._populate_word_display()
 
         # Highlight the very first key before the user starts
@@ -283,6 +327,8 @@ class TestView(tk.Frame):
         self._app.bind("<Key>", self._on_key)
         self._app.bind("<Escape>", self._on_escape)
         self._app.unbind("<Return>")
+        self._app.bind("<Control-r>", self._on_refresh)
+        self._app.bind("<Control-R>", self._on_refresh)
 
         self._app.focus_force()
 
@@ -292,6 +338,23 @@ class TestView(tk.Frame):
         self._acc_var.set("")
         self._typed_var.set("")
         self._status_var.set("")
+
+    # ------------------------------------------------------------------
+    # Hard mode
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_hard_mode(engine) -> None:
+        """Mutate word targets in-place: capitalise ~30% and add punctuation to ~30%."""
+        punctuation = ",.?!"
+        rng = random.Random()
+        for ws in engine.word_states:
+            word = ws.target
+            if rng.random() < 0.20:
+                word = word[0].upper() + word[1:]
+            if rng.random() < 0.20:
+                word = word + rng.choice(punctuation)
+            ws.target = word
 
     # ------------------------------------------------------------------
     # Word display population
@@ -375,7 +438,7 @@ class TestView(tk.Frame):
             return None
         # Ignore modifier-only and navigation keys
         if keysym in (
-            "Shift_L", "Shift_R", "Control_L", "Control_R",
+            "Shift_L", "Shift_R", "Control_L",
             "Alt_L", "Alt_R", "Caps_Lock", "Tab",
             "Return", "Delete", "Up", "Down", "Left", "Right",
             "Home", "End", "Prior", "Next", "Insert", "F1",
@@ -394,6 +457,30 @@ class TestView(tk.Frame):
         self._app.session_manager.abort_session()
         self._cleanup_bindings()
         self._app.raise_view("home")
+    
+    def _on_refresh(self, _event: tk.Event) -> None:
+        self._cancel_timer()
+        engine = getattr(self, "_engine", None)
+        if engine is None:
+            return
+        if engine.state == TestState.RUNNING:  
+            self._app.session_manager.abort_session()
+        new_engine = self._app.session_manager.new_session(
+            duration=self._selected_duration.get()
+        )
+
+        self._engine = new_engine
+
+        if self._hard_mode:
+            self._apply_hard_mode(new_engine)
+
+        self._populate_word_display()
+
+        first_target = new_engine.current_word_state.target
+        if first_target:
+            self._keyboard.set_active_key(first_target[0])
+
+        self._status_var.set("New test started.")
 
     # ------------------------------------------------------------------
     # Word display refresh
@@ -556,3 +643,6 @@ class TestView(tk.Frame):
     def _cleanup_bindings(self) -> None:
         self._app.unbind("<Key>")
         self._app.unbind("<Escape>")
+        self._app.unbind("<Control-r>")
+        self._app.unbind("<Control-R>")
+        

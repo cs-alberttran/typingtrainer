@@ -1,5 +1,5 @@
 """
-TypeTrainer — entry point.
+TypingTrainer — entry point.
 
 Wires together all layers and launches the Tkinter application:
 
@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+import tkinter as tk
+from enum import IntEnum
 
 # Ensure the project root is on sys.path so all subpackages resolve correctly
 # regardless of how the script is invoked.
@@ -27,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("typetrainer")
+logger = logging.getLogger("Typing Trainer")
 
 
 def main() -> None:
@@ -72,9 +74,9 @@ def main() -> None:
 
     app.raise_view("home")
 
-    logger.info("TypeTrainer started.")
+    logger.info("TypingTrainer started.")
     app.mainloop()
-    logger.info("TypeTrainer exited.")
+    logger.info("TypingTrainer exited.")
 
 
 if __name__ == "__main__":

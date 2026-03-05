@@ -38,7 +38,7 @@ WORDS_PER_SESSION: int = 200
 # ---------------------------------------------------------------------------
 # UI geometry
 # ---------------------------------------------------------------------------
-WINDOW_TITLE: str = "TypeTrainer"
+WINDOW_TITLE: str = "Typing Trainer"
 WINDOW_WIDTH: int = 900
 WINDOW_HEIGHT: int = 640
 WINDOW_MIN_WIDTH: int = 700

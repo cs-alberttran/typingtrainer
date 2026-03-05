@@ -54,7 +54,7 @@ class HomeView(tk.Frame):
         # ---- Title ---------------------------------------------------
         tk.Label(
             wrapper,
-            text="TypeTrainer",
+            text="TypingTrainer",
             font=(FONT_MONO, FONT_TITLE_SIZE + 4, "bold"),
             bg=BG_MAIN,
             fg=ACCENT,
