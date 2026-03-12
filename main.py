@@ -34,13 +34,22 @@ logger = logging.getLogger("Typing Trainer")
 
 def main() -> None:
     """Application entry point — create all objects and start the event loop."""
+    # Settings must be created and applied BEFORE any view module is imported
+    # so that `from config import …` statements in views see the correct values.
+    from application.settings_manager import SettingsManager
+    settings_manager = SettingsManager()
+    settings_manager.apply_to_config()
+
     from application.session import SessionManager
     from application.word_provider import WordProvider
     from infrastructure.persistence import AnalyticsRepository, ResultsRepository
     from ui.app import App
     from ui.views.home_view import HomeView
     from ui.views.results_view import ResultsView
-    from ui.views.test_view import TestView
+    from ui.    views.test_view import TestView
+    from ui.views.settings_view import SettingsView
+    from ui.views.targetpractice_view import TargetPracticeView
+    from ui.views.number_view import NumberView
 
     # ---- Infrastructure -----------------------------------------------
     results_repo = ResultsRepository()
@@ -62,15 +71,25 @@ def main() -> None:
     )
 
     # ---- UI layer -----------------------------------------------------
-    app = App(session_manager=session_manager, results_repository=results_repo)
-
+    app = App(
+        session_manager=session_manager,
+        results_repository=results_repo,
+        settings_manager=settings_manager,
+    )
+    
     home_view = HomeView(master=app)
     test_view = TestView(master=app)
     results_view = ResultsView(master=app)
+    settings_view = SettingsView(master=app)
+    target_practice_view = TargetPracticeView(master=app)
+    number_view = NumberView(master=app)
 
-    app.add_view("home", home_view)
-    app.add_view("test", test_view)
-    app.add_view("results", results_view)
+    app.add_view("home",            home_view)
+    app.add_view("test",            test_view)
+    app.add_view("results",         results_view)
+    app.add_view("settings",        settings_view)
+    app.add_view("target_practice",  target_practice_view)
+    app.add_view("number",          number_view)
 
     app.raise_view("home")
 
@@ -80,4 +99,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()  

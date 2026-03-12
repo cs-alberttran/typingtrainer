@@ -1,0 +1,586 @@
+"""
+Number Pad Practice view — practice typing numeric data in social-security format.
+
+Layout:
+  - Stats bar across the top (timer / WPM / accuracy / hints / duration chips).
+  - Main area splits horizontally:
+      LEFT  — numpad heatmap widget (fixed, not floating).
+      RIGHT — line-by-line entry display + typed echo bar.
+  - Test text: randomly generated SS-format numbers  (XXX-XX-XXXX).
+  - Enter key advances to the next entry (replaces Space from other views).
+  - No spaces in the test text.
+"""
+
+from __future__ import annotations
+
+import random
+import tkinter as tk
+from typing import TYPE_CHECKING, Optional
+
+from config import (
+    ACCENT,
+    ACCENT_HOVER,
+    BD,
+    BG_INPUT,
+    BG_MAIN,
+    BG_PANEL,
+    BG_WORD_BOX,
+    DEFAULT_DURATION,
+    FG_CORRECT,
+    FG_CURRENT,
+    FG_DEFAULT,
+    FG_ERROR,
+    FG_MUTED,
+    FG_PENDING,
+    FONT_BUTTON_SIZE,
+    FONT_MONO,
+    FONT_STAT_SIZE,
+    FONT_UI,
+    FONT_WORD_SIZE,
+    TEST_DURATIONS,
+    TIMER_POLL_MS,
+)
+from domain.models import TestState
+from ui.widgets.keyboard_heatmap import KeyboardHeatmap
+
+if TYPE_CHECKING:
+    from ui.app import App
+
+# Entries shown at once in the text widget
+_VISIBLE_ENTRIES: int = 30
+# Total entries generated per session
+_SS_PER_SESSION: int = 60
+
+
+def _generate_ss_number() -> str:
+    """Return a random social-security formatted number: XXX-XX-XXXX."""
+    a = random.randint(0, 999)
+    b = random.randint(0, 99)
+    c = random.randint(0, 9999)
+    return f"{a:03d}-{b:02d}-{c:04d}"
+
+
+class NumberView(tk.Frame):
+    """
+    Number-pad practice screen.
+
+    Displays SS-format numbers one per line; the user types each entry and
+    presses Enter to advance.  The numpad heatmap sits on the left; the text
+    display and echo bar sit on the right.
+    """
+
+    def __init__(self, master: "App") -> None:
+        super().__init__(master, bg=BG_MAIN)
+        self._app = master
+        self._timer_id: Optional[str] = None
+        self._selected_duration: tk.IntVar = tk.IntVar(value=DEFAULT_DURATION)
+        self._dur_buttons: dict[int, tk.Button] = {}
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        # ---- Top stats bar ------------------------------------------
+        stats_bar = tk.Frame(self, bg=BG_MAIN, padx=10, pady=6,
+                             relief=tk.FLAT, bd=0)
+        stats_bar.pack(fill=tk.X)
+
+        left_info = tk.Frame(stats_bar, bg=BG_PANEL, relief=tk.SUNKEN,
+                             bd=BD, padx=8, pady=2)
+        left_info.pack(side=tk.LEFT)
+
+        self._timer_var = tk.StringVar(value="")
+        self._wpm_var   = tk.StringVar(value="")
+        self._acc_var   = tk.StringVar(value="")
+
+        tk.Label(
+            left_info,
+            textvariable=self._timer_var,
+            font=(FONT_MONO, FONT_STAT_SIZE + 4, "bold"),
+            bg=BG_PANEL,
+            fg=FG_DEFAULT,
+            width=5,
+            anchor="w",
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            left_info,
+            textvariable=self._wpm_var,
+            font=(FONT_UI, FONT_STAT_SIZE),
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+            anchor="center",
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
+        tk.Label(
+            left_info,
+            textvariable=self._acc_var,
+            font=(FONT_UI, FONT_STAT_SIZE),
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+            anchor="center",
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
+        # Hints
+        tk.Label(
+            stats_bar,
+            text="ESC — quit",
+            font=(FONT_UI, 8),
+            bg=BG_MAIN,
+            fg=FG_MUTED,
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
+        tk.Label(
+            stats_bar,
+            text=" Ctrl + R ",
+            font=(FONT_UI, 8),
+            bg=BG_MAIN,
+            fg=FG_MUTED,
+            padx=4,
+            pady=2,
+            relief=tk.FLAT,
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
+        # Duration chips
+        dur_frame = tk.Frame(stats_bar, bg=BG_PANEL, relief=tk.SUNKEN,
+                             bd=BD, padx=4, pady=2)
+        dur_frame.pack(side=tk.RIGHT, padx=(0, 6))
+        for dur in TEST_DURATIONS:
+            btn = tk.Button(
+                dur_frame,
+                text=f"{dur}s",
+                font=(FONT_UI, FONT_BUTTON_SIZE - 1),
+                relief=tk.RAISED,
+                bd=BD,
+                cursor="hand2",
+                padx=6,
+                pady=1,
+                command=lambda d=dur: self._on_duration_select(d),
+            )
+            btn.pack(side=tk.LEFT, padx=2)
+            self._dur_buttons[dur] = btn
+        self._refresh_duration_chips()
+
+        # ---- Main area: left col (label + numpad) | right col (text box + echo) ----
+        main_area = tk.Frame(self, bg=BG_MAIN)
+        main_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 4))
+
+        # LEFT column: instructions label on top, numpad below
+        left_col = tk.Frame(main_area, bg=BG_MAIN)
+        left_col.pack(side=tk.LEFT, anchor="n", padx=(0, 10), pady=4)
+
+        desc_frame = tk.Frame(left_col, bg=BG_PANEL, relief=tk.SUNKEN,
+                              bd=BD, padx=10, pady=6)
+        desc_frame.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(
+            desc_frame,
+            text="Practice numeberic data entry (xxx-xx-xxxx format)",
+            font=(FONT_UI, 9),
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+            justify=tk.LEFT,
+        ).pack(anchor="w")
+
+        numpad_panel = tk.Frame(left_col, bg=BG_PANEL, relief=tk.GROOVE,
+                                bd=BD, padx=10, pady=10)
+        numpad_panel.pack(anchor="n")
+
+        tk.Label(
+            numpad_panel,
+            text="Num Pad",
+            font=(FONT_UI, 9, "bold"),
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+        ).pack(pady=(0, 6))
+
+        self._numpad = KeyboardHeatmap(
+            numpad_panel,
+            key_size=18,
+            mode="numpad",
+        )
+        self._numpad.pack()
+
+        # RIGHT column: word display only
+        right_col = tk.Frame(main_area, bg=BG_MAIN)
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Word / entry display
+        word_frame = tk.Frame(right_col, bg=BG_WORD_BOX, relief=tk.SUNKEN, bd=BD)
+        word_frame.pack(fill=tk.BOTH, expand=True)
+
+        self._word_text = tk.Text(
+            word_frame,
+            font=(FONT_MONO, FONT_WORD_SIZE),
+            bg=BG_WORD_BOX,
+            fg=FG_PENDING,
+            relief=tk.FLAT,
+            wrap=tk.NONE,
+            state=tk.DISABLED,
+            cursor="arrow",
+            padx=18,
+            pady=10,
+            spacing1=4,
+            spacing3=4,
+        )
+        self._word_text.pack(fill=tk.BOTH, expand=True)
+
+        self._word_text.tag_configure("pending",      foreground=FG_PENDING)
+        self._word_text.tag_configure("correct",      foreground=FG_CORRECT)
+        self._word_text.tag_configure("error",        foreground=FG_ERROR)
+        self._word_text.tag_configure("current_word", foreground=FG_CURRENT, underline=True)
+        self._word_text.tag_configure("cursor_char",  background=ACCENT, foreground="#ffffff")
+        self._word_text.tag_raise("cursor_char")
+
+        # Echo bar
+        input_frame = tk.Frame(right_col, bg=BG_PANEL, relief=tk.GROOVE,
+                               bd=BD, padx=10, pady=4)
+        input_frame.pack(fill=tk.X, pady=(4, 0))
+
+        tk.Label(
+            input_frame,
+            text="typing:",
+            font=(FONT_UI, 8),
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self._typed_var = tk.StringVar(value="")
+        tk.Label(
+            input_frame,
+            textvariable=self._typed_var,
+            font=(FONT_MONO, FONT_WORD_SIZE - 4),
+            bg=BG_INPUT,
+            fg="#1a1a1a",
+            anchor="w",
+            relief=tk.SUNKEN,
+            bd=BD,
+            padx=8,
+            pady=3,
+            width=30,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # ---- Status bar ---------------------------------------------
+        status_bar = tk.Frame(self, bg=BG_MAIN, padx=10, pady=3)
+        status_bar.pack(fill=tk.X)
+        self._status_var = tk.StringVar(value="")
+        tk.Label(
+            status_bar,
+            textvariable=self._status_var,
+            font=(FONT_UI, 8),
+            bg=BG_MAIN,
+            fg=FG_MUTED,
+        ).pack(side=tk.LEFT)
+
+    # ------------------------------------------------------------------
+    # View lifecycle
+    # ------------------------------------------------------------------
+
+    def on_show(self, **_kwargs) -> None:
+        self._cancel_timer()
+        self._reset_stats_display()
+        self._numpad.reset()
+
+        words = [_generate_ss_number() for _ in range(_SS_PER_SESSION)]
+
+        engine = self._app.session_manager.new_session(
+            duration=self._selected_duration.get(),
+            game_mode="number_practice",
+            words=words,
+        )
+        self._engine = engine
+        self._word_positions: list[tuple[str, str]] = []
+
+        self._populate_word_display()
+
+        first_target = self._engine.current_word_state.target
+        if first_target:
+            self._numpad.set_active_key(first_target[0])
+
+        self._status_var.set("Type each number and press Enter to advance…")
+
+        self._app.bind("<Key>",       self._on_key)
+        self._app.bind("<Return>",    self._on_return)
+        self._app.bind("<Escape>",    self._on_escape)
+        self._app.bind("<Control-r>", self._on_refresh)
+        self._app.bind("<Control-R>", self._on_refresh)
+
+        self._app.focus_force()
+
+    def _reset_stats_display(self) -> None:
+        self._timer_var.set("–")
+        self._wpm_var.set("")
+        self._acc_var.set("")
+        self._typed_var.set("")
+        self._status_var.set("")
+
+    # ------------------------------------------------------------------
+    # Duration chips
+    # ------------------------------------------------------------------
+
+    def _on_duration_select(self, duration: int) -> None:
+        if hasattr(self, "_engine") and self._engine.state == TestState.RUNNING:
+            return
+        self._selected_duration.set(duration)
+        self._refresh_duration_chips()
+        self.on_show()
+
+    def _refresh_duration_chips(self) -> None:
+        selected = self._selected_duration.get()
+        for dur, btn in self._dur_buttons.items():
+            if dur == selected:
+                btn.configure(bg=ACCENT, fg="#ffffff", relief=tk.SUNKEN)
+            else:
+                btn.configure(bg=BG_PANEL, fg=FG_DEFAULT, relief=tk.RAISED)
+
+    # ------------------------------------------------------------------
+    # Word display
+    # ------------------------------------------------------------------
+
+    def _populate_word_display(self) -> None:
+        txt = self._word_text
+        txt.configure(state=tk.NORMAL)
+        txt.delete("1.0", tk.END)
+        self._word_positions.clear()
+
+        entries = [ws.target for ws in self._engine.word_states[:_VISIBLE_ENTRIES]]
+        for i, entry in enumerate(entries):
+            if i > 0:
+                txt.insert(tk.END, "\n")
+            start_idx = txt.index(tk.END + "-1c")
+            txt.insert(tk.END, entry)
+            end_idx = txt.index(tk.END + "-1c")
+            self._word_positions.append((start_idx, end_idx))
+            txt.tag_add("pending", start_idx, end_idx)
+
+        txt.configure(state=tk.DISABLED)
+        self._highlight_current_entry()
+
+    def _highlight_current_entry(self) -> None:
+        idx = self._engine.current_index
+        if idx >= len(self._word_positions):
+            return
+        start, end = self._word_positions[idx]
+        self._word_text.tag_remove("current_word", "1.0", tk.END)
+        self._word_text.tag_add("current_word", start, end)
+        self._word_text.see(start)
+
+    # ------------------------------------------------------------------
+    # Keystroke handlers
+    # ------------------------------------------------------------------
+
+    def _on_return(self, _event: tk.Event) -> None:
+        """Enter key advances to the next entry (same role as Space in other views)."""
+        self._app.settings_manager.play_click()
+        self._app.session_manager.process_key(" ")
+        engine = self._engine
+
+        if engine.state == TestState.FINISHED:
+            self._on_session_finish()
+            return
+
+        if engine.state == TestState.RUNNING and self._timer_id is None:
+            self._start_timer_loop()
+            self._status_var.set("")
+
+        self._refresh_word_display()
+        self._update_stats()
+
+    def _on_key(self, event: tk.Event) -> None:
+        char = self._classify_event(event)
+        if char is None:
+            return
+
+        self._app.settings_manager.play_click()
+        self._app.session_manager.process_key(char)
+        engine = self._engine
+
+        if engine.state == TestState.FINISHED:
+            self._on_session_finish()
+            return
+
+        if engine.state == TestState.RUNNING and self._timer_id is None:
+            self._start_timer_loop()
+            self._status_var.set("")
+
+        self._refresh_word_display()
+        self._update_stats()
+
+    @staticmethod
+    def _classify_event(event: tk.Event) -> Optional[str]:
+        keysym = event.keysym
+        if keysym == "BackSpace":
+            return "CtrlBackSpace" if event.state & 4 else "BackSpace"
+        # Return is handled by the dedicated _on_return binding
+        if keysym in (
+            "Return", "Escape", "space",
+            "Shift_L", "Shift_R", "Control_L",
+            "Alt_L", "Alt_R", "Caps_Lock", "Tab",
+            "Delete", "Up", "Down", "Left", "Right",
+            "Home", "End", "Prior", "Next", "Insert",
+            "F1", "F2", "F3", "F4", "F5", "F6",
+            "F7", "F8", "F9", "F10", "F11", "F12",
+            "Super_L", "Super_R",
+        ):
+            return None
+        char = event.char
+        if char and char.isprintable():
+            return char
+        return None
+
+    def _on_escape(self, _event: tk.Event) -> None:
+        self._cancel_timer()
+        self._app.session_manager.abort_session()
+        self._cleanup_bindings()
+        self._app.raise_view("home")
+
+    def _on_refresh(self, _event: tk.Event) -> None:
+        self._cancel_timer()
+        engine = getattr(self, "_engine", None)
+        if engine is not None and engine.state == TestState.RUNNING:
+            self._app.session_manager.abort_session()
+        self.on_show()
+
+    # ------------------------------------------------------------------
+    # Word display refresh
+    # ------------------------------------------------------------------
+
+    def _refresh_word_display(self) -> None:
+        engine = self._engine
+        idx = engine.current_index
+        if idx >= len(self._word_positions):
+            return
+
+        word_state = engine.current_word_state
+        typed    = word_state.typed
+        target   = word_state.target
+        overflow = len(typed) > len(target)
+
+        start_pos, _ = self._word_positions[idx]
+        txt = self._word_text
+        txt.configure(state=tk.NORMAL)
+
+        word_start, word_end = self._word_positions[idx]
+        for tag in ("pending", "correct", "error", "current_word", "cursor_char"):
+            txt.tag_remove(tag, word_start, word_end)
+
+        if overflow:
+            txt.tag_add("error", word_start, word_end)
+        else:
+            for j, target_ch in enumerate(target):
+                cs = f"{start_pos}+{j}c"
+                ce = f"{start_pos}+{j + 1}c"
+                if j < len(typed):
+                    tag = "correct" if typed[j] == target_ch else "error"
+                else:
+                    tag = "pending"
+                txt.tag_add(tag, cs, ce)
+
+            # Cursor block on the next character to type
+            cursor_pos = len(typed)
+            if cursor_pos < len(target):
+                cs = f"{start_pos}+{cursor_pos}c"
+                ce = f"{start_pos}+{cursor_pos + 1}c"
+                txt.tag_add("cursor_char", cs, ce)
+
+        txt.tag_add("current_word", word_start, word_end)
+
+        if idx > 0:
+            self._colour_committed_entry(idx - 1)
+
+        txt.configure(state=tk.DISABLED)
+
+        self._typed_var.set(typed)
+        self._highlight_current_entry()
+
+        # Update numpad highlight
+        if overflow:
+            next_key = None
+        elif len(typed) < len(target):
+            next_key = target[len(typed)]
+        else:
+            next_key = "enter"   # entry complete — press Enter to advance
+        self._numpad.set_active_key(next_key)
+
+    def _colour_committed_entry(self, idx: int) -> None:
+        if idx >= len(self._word_positions) or idx >= len(self._engine.word_states):
+            return
+        ws = self._engine.word_states[idx]
+        start_pos, _ = self._word_positions[idx]
+        txt = self._word_text
+        for j, target_ch in enumerate(ws.target):
+            cs = f"{start_pos}+{j}c"
+            ce = f"{start_pos}+{j + 1}c"
+            for tag in ("pending", "current_word"):
+                txt.tag_remove(tag, cs, ce)
+            if j < len(ws.typed):
+                tag = "correct" if ws.typed[j] == target_ch else "error"
+            else:
+                tag = "error"
+            txt.tag_add(tag, cs, ce)
+
+    # ------------------------------------------------------------------
+    # Timer loop
+    # ------------------------------------------------------------------
+
+    def _start_timer_loop(self) -> None:
+        self._tick()
+
+    def _tick(self) -> None:
+        engine = self._engine
+        if engine.state == TestState.FINISHED:
+            self._on_session_finish()
+            return
+
+        remaining = engine.remaining_seconds
+        self._timer_var.set(f"{remaining:.0f}s")
+        self._update_stats()
+
+        if remaining <= 0:
+            self._on_session_finish()
+        else:
+            self._timer_id = self.after(TIMER_POLL_MS, self._tick)
+
+    def _cancel_timer(self) -> None:
+        if self._timer_id is not None:
+            self.after_cancel(self._timer_id)
+            self._timer_id = None
+
+    # ------------------------------------------------------------------
+    # Stats
+    # ------------------------------------------------------------------
+
+    def _update_stats(self) -> None:
+        engine = self._engine
+        if engine.state == TestState.IDLE:
+            return
+        self._wpm_var.set(f"{engine.live_wpm():.0f} wpm")
+        self._acc_var.set(f"{engine.live_accuracy() * 100:.0f}%")
+
+    # ------------------------------------------------------------------
+    # Session end
+    # ------------------------------------------------------------------
+
+    def _on_session_finish(self) -> None:
+        self._cancel_timer()
+        self._numpad.set_active_key(None)
+        engine = self._engine
+        if engine.state != TestState.FINISHED:
+            engine.finish()
+
+        result = self._app.session_manager.result
+        self._cleanup_bindings()
+
+        if result is not None:
+            self._app.raise_view("results", result=result)
+        else:
+            result = engine.build_result()
+            self._app.raise_view("results", result=result)
+
+    def _cleanup_bindings(self) -> None:
+        self._app.unbind("<Key>")
+        self._app.unbind("<Return>")
+        self._app.unbind("<Escape>")
+        self._app.unbind("<Control-r>")
+        self._app.unbind("<Control-R>")

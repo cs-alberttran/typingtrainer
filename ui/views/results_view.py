@@ -50,6 +50,7 @@ class ResultsView(tk.Frame):
         super().__init__(master, bg=BG_MAIN)
         self._app = master
         self._last_duration: int = 30
+        self._last_view: str = "test"
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -183,6 +184,12 @@ class ResultsView(tk.Frame):
         if result is None:
             return
         self._last_duration = result.duration_seconds
+        if result.game_mode == "targeted_practice":
+            self._last_view = "target_practice"
+        elif result.game_mode == "number_practice":
+            self._last_view = "number"
+        else:
+            self._last_view = "test"
         self._render(result)
         self._app.bind("<Return>", lambda _e: self._on_retry())
 
@@ -210,7 +217,12 @@ class ResultsView(tk.Frame):
     # ------------------------------------------------------------------
 
     def _on_retry(self) -> None:
-        self._app.raise_view("test", duration=self._last_duration)
+        if self._last_view == "target_practice":
+            self._app.raise_view("target_practice")
+        elif self._last_view == "number":
+            self._app.raise_view("number")
+        else:
+            self._app.raise_view("test", duration=self._last_duration)
 
     def _on_home(self) -> None:
         self._app.raise_view("home")

@@ -1,23 +1,19 @@
 """
-Test view — the main typing experience.
+Targeted Practice view — practice common letter n-grams.
 
-Architecture notes:
-  - Word display uses a read-only Text widget with character-level tags.
-    Tags created lazily, colored in real-time as the user types.
-  - Keyboard capture is done via window-level <Key> binding rather than
-    an Entry widget, giving us full control over what reaches the engine.
-  - A recurring `after()` loop drives the timer countdown at TIMER_POLL_MS
-    resolution without blocking the Tkinter event loop.
-  - The view is stateless between sessions; on_show() resets everything.
+Like the standard test view but:
+  - No hard mode.
+  - Word list sourced from grams_list.txt (All), lefthand.txt (Left),
+    or righthand.txt (Right), selectable via a chip bar.
+  - Mode description updated accordingly.
 """
 
 from __future__ import annotations
 
-import random
 import tkinter as tk
 from typing import TYPE_CHECKING, Optional
-from ui.widgets.keyboard_heatmap import KeyboardHeatmap
 
+from application.word_provider import WordProvider
 from config import (
     ACCENT,
     ACCENT_HOVER,
@@ -38,23 +34,37 @@ from config import (
     FONT_STAT_SIZE,
     FONT_UI,
     FONT_WORD_SIZE,
+    GRAMS_FILE,
+    LEFTHAND_FILE,
+    RIGHTHAND_FILE,
     TEST_DURATIONS,
     TIMER_POLL_MS,
+    WORDS_PER_SESSION,
 )
 from domain.models import TestState
+from ui.widgets.keyboard_heatmap import KeyboardHeatmap
 
 if TYPE_CHECKING:
     from ui.app import App
 
-# How many words to make visible in the word display at once
 _VISIBLE_WORDS: int = 80
 
+# Hand-mode labels → source file
+_HAND_FILES = {
+    "All":   GRAMS_FILE,
+    "Left":  LEFTHAND_FILE,
+    "Right": RIGHTHAND_FILE,
+}
 
-class TestView(tk.Frame):
+# Pre-load word providers once so switching hands is instant
+_PROVIDERS: dict[str, WordProvider] = {
+    hand: WordProvider(path) for hand, path in _HAND_FILES.items()
+}
+
+
+class TargetPracticeView(tk.Frame):
     """
-    Typing test screen.
-
-    Accepts a `duration` kwarg via on_show() and starts a fresh session.
+    Targeted practice screen — n-gram drill with hand selector.
     """
 
     def __init__(self, master: "App") -> None:
@@ -62,8 +72,9 @@ class TestView(tk.Frame):
         self._app = master
         self._timer_id: Optional[str] = None
         self._selected_duration: tk.IntVar = tk.IntVar(value=DEFAULT_DURATION)
-        self._hard_mode: bool = False
+        self._selected_hand: str = "All"
         self._dur_buttons: dict[int, tk.Button] = {}
+        self._hand_buttons: dict[str, tk.Button] = {}
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -76,14 +87,14 @@ class TestView(tk.Frame):
                              relief=tk.FLAT, bd=0)
         stats_bar.pack(fill=tk.X)
 
-        # Sunken divider panel that holds timer + wpm + acc
+        # Left info panel: timer / wpm / acc
         left_info = tk.Frame(stats_bar, bg=BG_PANEL, relief=tk.SUNKEN,
                              bd=BD, padx=8, pady=2)
         left_info.pack(side=tk.LEFT)
 
         self._timer_var = tk.StringVar(value="")
-        self._wpm_var = tk.StringVar(value="")
-        self._acc_var = tk.StringVar(value="")
+        self._wpm_var   = tk.StringVar(value="")
+        self._acc_var   = tk.StringVar(value="")
 
         tk.Label(
             left_info,
@@ -113,7 +124,7 @@ class TestView(tk.Frame):
             anchor="center",
         ).pack(side=tk.LEFT, padx=(12, 0))
 
-        # ESC hint
+        # ESC / Ctrl+R hints
         tk.Label(
             stats_bar,
             text="ESC — quit",
@@ -128,28 +139,11 @@ class TestView(tk.Frame):
             font=(FONT_UI, 8),
             bg=BG_MAIN,
             fg=FG_MUTED,
-            anchor="center",
             padx=4,
             pady=2,
             relief=tk.FLAT,
             cursor="arrow",
         ).pack(side=tk.RIGHT, padx=(0, 4))
-
-        # ---- Hard Mode button --------------------------------------
-        self._hard_btn = tk.Button(
-            stats_bar,
-            text="Hard Mode",
-            font=(FONT_UI, FONT_BUTTON_SIZE - 1),
-            relief=tk.RAISED,
-            bd=BD,
-            cursor="hand2",
-            padx=6,
-            pady=1,
-            bg=BG_PANEL,
-            fg=FG_DEFAULT,
-            command=self._on_hard_mode_toggle,
-        )
-        self._hard_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
         # ---- Duration chips -----------------------------------------
         dur_frame = tk.Frame(stats_bar, bg=BG_PANEL, relief=tk.SUNKEN,
@@ -170,6 +164,26 @@ class TestView(tk.Frame):
             btn.pack(side=tk.LEFT, padx=2)
             self._dur_buttons[dur] = btn
         self._refresh_duration_chips()
+
+        # ---- Hand selector chips (All / Left / Right) ---------------
+        hand_frame = tk.Frame(stats_bar, bg=BG_PANEL, relief=tk.SUNKEN,
+                              bd=BD, padx=4, pady=2)
+        hand_frame.pack(side=tk.RIGHT, padx=(0, 6))
+        for hand in ("All", "Left", "Right"):
+            btn = tk.Button(
+                hand_frame,
+                text=hand,
+                font=(FONT_UI, FONT_BUTTON_SIZE - 1),
+                relief=tk.RAISED,
+                bd=BD,
+                cursor="hand2",
+                padx=6,
+                pady=1,
+                command=lambda h=hand: self._on_hand_select(h),
+            )
+            btn.pack(side=tk.LEFT, padx=2)
+            self._hand_buttons[hand] = btn
+        self._refresh_hand_chips()
 
         # ---- Word display -------------------------------------------
         word_frame = tk.Frame(self, bg=BG_WORD_BOX, relief=tk.SUNKEN, bd=BD)
@@ -192,24 +206,15 @@ class TestView(tk.Frame):
         )
         self._word_text.pack(fill=tk.X)
 
-        # Configure text tags
-        self._word_text.tag_configure("pending", foreground=FG_PENDING)
-        self._word_text.tag_configure("correct", foreground=FG_CORRECT)
-        self._word_text.tag_configure("error", foreground=FG_ERROR)
-        self._word_text.tag_configure(
-            "current_word",
-            foreground=FG_CURRENT,
-            underline=True,
-        )
-        self._word_text.tag_configure(
-            "cursor_char",
-            background=ACCENT,
-            foreground="#ffffff",
-        )
-        # cursor_char must win over all other tags on the same character
+        # Text tags
+        self._word_text.tag_configure("pending",      foreground=FG_PENDING)
+        self._word_text.tag_configure("correct",      foreground=FG_CORRECT)
+        self._word_text.tag_configure("error",        foreground=FG_ERROR)
+        self._word_text.tag_configure("current_word", foreground=FG_CURRENT, underline=True)
+        self._word_text.tag_configure("cursor_char",  background=ACCENT, foreground="#ffffff")
         self._word_text.tag_raise("cursor_char")
 
-        # ---- Typed input display (echo bar) --------------------------
+        # ---- Typed input display (echo bar) -------------------------
         input_frame = tk.Frame(self, bg=BG_PANEL, relief=tk.GROOVE, bd=BD,
                                padx=10, pady=4)
         input_frame.pack(fill=tk.X, padx=10, pady=(0, 2))
@@ -223,7 +228,7 @@ class TestView(tk.Frame):
         ).pack(side=tk.LEFT, padx=(0, 6))
 
         self._typed_var = tk.StringVar(value="")
-        typed_label = tk.Label(
+        tk.Label(
             input_frame,
             textvariable=self._typed_var,
             font=(FONT_MONO, FONT_WORD_SIZE - 4),
@@ -235,21 +240,20 @@ class TestView(tk.Frame):
             padx=8,
             pady=3,
             width=40,
-        )
-        typed_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # ---- Keyboard panel (static — holds mode description) -------
+        # ---- Keyboard panel (static background) ---------------------
         kbd_panel = tk.Frame(self, bg=BG_PANEL, relief=tk.GROOVE, bd=BD,
                              pady=6)
         kbd_panel.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 4))
 
-        # Mode description on the left (stays in place)
+        # Mode description — left of the panel
         mode_desc_frame = tk.Frame(kbd_panel, bg=BG_PANEL, relief=tk.SUNKEN,
                                    bd=BD, padx=8, pady=6)
         mode_desc_frame.pack(side=tk.LEFT, anchor="center", padx=(6, 0))
         tk.Label(
             mode_desc_frame,
-            text="Practice the most\ncommon English words!",
+            text="Practice common\nletter combinations!",
             font=(FONT_UI, 9),
             bg=BG_PANEL,
             fg=FG_MUTED,
@@ -260,7 +264,6 @@ class TestView(tk.Frame):
         self._kbd_key_size: int = 13
         self._kbd_float = tk.Frame(self, bg=BG_PANEL, relief=tk.RAISED, bd=2)
 
-        # Title / drag bar
         _drag_bar = tk.Frame(self._kbd_float, bg=ACCENT, cursor="fleur")
         _drag_bar.pack(fill=tk.X)
         _drag_lbl = tk.Label(
@@ -277,7 +280,6 @@ class TestView(tk.Frame):
         self._keyboard = KeyboardHeatmap(self._kbd_float, key_size=self._kbd_key_size)
         self._keyboard.pack(padx=6, pady=(2, 20))
 
-        # Resize grip — bottom-right corner
         _resize_grip = tk.Label(
             self._kbd_float,
             text="⇲",
@@ -288,7 +290,7 @@ class TestView(tk.Frame):
         )
         _resize_grip.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-2)
 
-        # -- Drag logic --
+        # Drag logic
         _d: dict = {"x": 0, "y": 0}
 
         def _drag_start(e: tk.Event) -> None:
@@ -310,7 +312,7 @@ class TestView(tk.Frame):
             _w.bind("<ButtonPress-1>", _drag_start)
             _w.bind("<B1-Motion>", _drag_motion)
 
-        # -- Resize logic --
+        # Resize logic
         _r: dict = {"x": 0, "y": 0, "w": 0, "h": 0}
 
         def _resize_start(e: tk.Event) -> None:
@@ -324,10 +326,8 @@ class TestView(tk.Frame):
             nh = max(130, _r["h"] + (e.y_root - _r["y"]))
             pw = self.winfo_width()
             ph = self.winfo_height()
-            fx = self._kbd_float.winfo_x()
-            fy = self._kbd_float.winfo_y()
-            nw = min(nw, pw - fx)
-            nh = min(nh, ph - fy)
+            nw = min(nw, pw - self._kbd_float.winfo_x())
+            nh = min(nh, ph - self._kbd_float.winfo_y())
             self._kbd_float.place(width=nw, height=nh)
 
         def _resize_release(_e: tk.Event) -> None:
@@ -348,10 +348,9 @@ class TestView(tk.Frame):
                 _resize_grip.lift()
 
         _resize_grip.bind("<ButtonPress-1>", _resize_start)
-        _resize_grip.bind("<B1-Motion>", _resize_motion)
+        _resize_grip.bind("<B1-Motion>",     _resize_motion)
         _resize_grip.bind("<ButtonRelease-1>", _resize_release)
 
-        # Place the floating keyboard after the layout is computed
         self.after(150, self._place_kbd_initial)
 
         # ---- Status bar ---------------------------------------------
@@ -366,8 +365,11 @@ class TestView(tk.Frame):
             fg=FG_MUTED,
         ).pack(side=tk.LEFT)
 
+    # ------------------------------------------------------------------
+    # Floating keyboard placement
+    # ------------------------------------------------------------------
+
     def _place_kbd_initial(self) -> None:
-        """Centre the floating keyboard in the view on first render."""
         self.update_idletasks()
         pw = self.winfo_width()
         ph = self.winfo_height()
@@ -378,36 +380,17 @@ class TestView(tk.Frame):
         self._kbd_float.place(x=x, y=y)
 
     # ------------------------------------------------------------------
-    # View lifecycle
+    # Chip selectors
     # ------------------------------------------------------------------
-
-    # ------------------------------------------------------------------
-    # Duration selection
-    # ------------------------------------------------------------------
-
-    def _on_hard_mode_toggle(self) -> None:
-        """Toggle hard mode on/off and restart the session."""
-        if hasattr(self, "_engine") and self._engine.state == TestState.RUNNING:
-            return
-        self._hard_mode = not self._hard_mode
-        if self._hard_mode:
-            self._hard_btn.configure(bg=ACCENT, fg="#ffffff", relief=tk.SUNKEN)
-        else:
-            self._hard_btn.configure(bg=BG_PANEL, fg=FG_DEFAULT, relief=tk.RAISED)
-        self.on_show()
 
     def _on_duration_select(self, duration: int) -> None:
-        """Called when the user clicks a duration chip."""
-        from domain.models import TestState  # already imported at module level
         if hasattr(self, "_engine") and self._engine.state == TestState.RUNNING:
-            return  # ignore while a test is running
+            return
         self._selected_duration.set(duration)
         self._refresh_duration_chips()
-        # Restart the session with the new duration
         self.on_show()
 
     def _refresh_duration_chips(self) -> None:
-        """Highlight the active duration chip, dim the rest."""
         selected = self._selected_duration.get()
         for dur, btn in self._dur_buttons.items():
             if dur == selected:
@@ -415,37 +398,51 @@ class TestView(tk.Frame):
             else:
                 btn.configure(bg=BG_PANEL, fg=FG_DEFAULT, relief=tk.RAISED)
 
-    def on_show(self, duration: int = 0, **_kwargs) -> None:
+    def _on_hand_select(self, hand: str) -> None:
+        if hasattr(self, "_engine") and self._engine.state == TestState.RUNNING:
+            return
+        self._selected_hand = hand
+        self._refresh_hand_chips()
+        self.on_show()
+
+    def _refresh_hand_chips(self) -> None:
+        for hand, btn in self._hand_buttons.items():
+            if hand == self._selected_hand:
+                btn.configure(bg=ACCENT, fg="#ffffff", relief=tk.SUNKEN)
+            else:
+                btn.configure(bg=BG_PANEL, fg=FG_DEFAULT, relief=tk.RAISED)
+
+    # ------------------------------------------------------------------
+    # View lifecycle
+    # ------------------------------------------------------------------
+
+    def on_show(self, **_kwargs) -> None:
         """Initialise a fresh session when this view becomes active."""
-        if duration:
-            self._selected_duration.set(duration)
-            self._refresh_duration_chips()
         self._cancel_timer()
         self._reset_stats_display()
         self._keyboard.reset()
 
+        provider = _PROVIDERS[self._selected_hand]
+        words = provider.generate(count=WORDS_PER_SESSION)
+
         engine = self._app.session_manager.new_session(
-            duration=self._selected_duration.get()
+            duration=self._selected_duration.get(),
+            game_mode="targeted_practice",
+            words=words,
         )
         self._engine = engine
-        self._word_chars: list[tuple[str, str]] = []  # (start_idx, end_idx) per word char
-        self._word_positions: list[tuple[str, str]] = []  # (word_start, word_end) per word
-
-        if self._hard_mode:
-            self._apply_hard_mode(self._engine)
+        self._word_positions: list[tuple[str, str]] = []
 
         self._populate_word_display()
 
-        # Highlight the very first key before the user starts
         first_target = self._engine.current_word_state.target
         if first_target:
             self._keyboard.set_active_key(first_target[0])
 
-        self._status_var.set("Start typing to begin the test…")
+        self._status_var.set("Start typing to begin targeted practice…")
 
-        # Bind keys to the top-level window so focus doesn't matter
-        self._app.bind("<Key>", self._on_key)
-        self._app.bind("<Escape>", self._on_escape)
+        self._app.bind("<Key>",       self._on_key)
+        self._app.bind("<Escape>",    self._on_escape)
         self._app.unbind("<Return>")
         self._app.bind("<Control-r>", self._on_refresh)
         self._app.bind("<Control-R>", self._on_refresh)
@@ -461,43 +458,22 @@ class TestView(tk.Frame):
         self._status_var.set("")
 
     # ------------------------------------------------------------------
-    # Hard mode
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _apply_hard_mode(engine) -> None:
-        """Mutate word targets in-place: capitalise ~20% and add punctuation to ~20%."""
-        punctuation = ",.?!"
-        rng = random.Random()
-        for ws in engine.word_states:
-            word = ws.target
-            if rng.random() < 0.20:
-                word = word[0].upper() + word[1:]
-            if rng.random() < 0.20:
-                word = word + rng.choice(punctuation)
-            ws.target = word
-
-    # ------------------------------------------------------------------
-    # Word display population
+    # Word display
     # ------------------------------------------------------------------
 
     def _populate_word_display(self) -> None:
-        """Insert the first N words into the Text widget and tag them."""
         txt = self._word_text
         txt.configure(state=tk.NORMAL)
         txt.delete("1.0", tk.END)
         self._word_positions.clear()
 
         words = [ws.target for ws in self._engine.word_states[:_VISIBLE_WORDS]]
-
         for i, word in enumerate(words):
             if i > 0:
                 txt.insert(tk.END, " ")
-
             start_idx = txt.index(tk.END + "-1c")
             txt.insert(tk.END, word)
             end_idx = txt.index(tk.END + "-1c")
-
             self._word_positions.append((start_idx, end_idx))
             txt.tag_add("pending", start_idx, end_idx)
 
@@ -505,14 +481,12 @@ class TestView(tk.Frame):
         self._highlight_current_word()
 
     def _highlight_current_word(self) -> None:
-        """Apply the current_word tag to the active word."""
         idx = self._engine.current_index
         if idx >= len(self._word_positions):
             return
         start, end = self._word_positions[idx]
         self._word_text.tag_remove("current_word", "1.0", tk.END)
         self._word_text.tag_add("current_word", start, end)
-        # Scroll so the current word is visible
         self._word_text.see(start)
 
     # ------------------------------------------------------------------
@@ -525,15 +499,13 @@ class TestView(tk.Frame):
             return
 
         self._app.settings_manager.play_click()
-        outcome = self._app.session_manager.process_key(char)
+        self._app.session_manager.process_key(char)
         engine = self._engine
 
         if engine.state == TestState.FINISHED and self._timer_id is not None:
-            # Session ended mid-keypress
             self._on_session_finish()
             return
 
-        # Start timer loop on first valid key
         if engine.state == TestState.RUNNING and self._timer_id is None:
             self._start_timer_loop()
             self._status_var.set("")
@@ -543,22 +515,13 @@ class TestView(tk.Frame):
 
     @staticmethod
     def _classify_event(event: tk.Event) -> Optional[str]:
-        """
-        Convert a Tkinter key event into a character suitable for the engine.
-
-        Returns None for events that should be completely ignored.
-        """
         keysym = event.keysym
-
         if keysym == "BackSpace":
-            if event.state & 4:          # Ctrl held — clear whole word
-                return "CtrlBackSpace"
-            return "BackSpace"
+            return "CtrlBackSpace" if event.state & 4 else "BackSpace"
         if keysym == "space":
             return " "
         if keysym == "Escape":
             return None
-        # Ignore modifier-only and navigation keys
         if keysym in (
             "Shift_L", "Shift_R", "Control_L",
             "Alt_L", "Alt_R", "Caps_Lock", "Tab",
@@ -568,7 +531,6 @@ class TestView(tk.Frame):
             "F10", "F11", "F12", "Super_L", "Super_R",
         ):
             return None
-        # Accept printable single characters
         char = event.char
         if char and char.isprintable():
             return char
@@ -579,53 +541,41 @@ class TestView(tk.Frame):
         self._app.session_manager.abort_session()
         self._cleanup_bindings()
         self._app.raise_view("home")
-    
+
     def _on_refresh(self, _event: tk.Event) -> None:
         self._cancel_timer()
         engine = getattr(self, "_engine", None)
-        if engine is None:
-            return
-        if engine.state == TestState.RUNNING:  
+        if engine is not None and engine.state == TestState.RUNNING:
             self._app.session_manager.abort_session()
+
+        provider = _PROVIDERS[self._selected_hand]
+        words = provider.generate(count=WORDS_PER_SESSION)
         new_engine = self._app.session_manager.new_session(
-            duration=self._selected_duration.get()
+            duration=self._selected_duration.get(),
+            game_mode="targeted_practice",
+            words=words,
         )
-
         self._engine = new_engine
-
-        if self._hard_mode:
-            self._apply_hard_mode(new_engine)
-
         self._populate_word_display()
 
         first_target = new_engine.current_word_state.target
         if first_target:
             self._keyboard.set_active_key(first_target[0])
 
-        self._status_var.set("New test started.")
+        self._status_var.set("New session started.")
 
     # ------------------------------------------------------------------
     # Word display refresh
     # ------------------------------------------------------------------
 
     def _refresh_word_display(self) -> None:
-        """
-        Re-colour the current word based on what has been typed so far.
-        All committed words keep their final colouring.
-
-        Also:
-        - Applies a cursor-block highlight on the next character to type.
-        - Colours the whole word red when the user over-types.
-        - Updates the keyboard widget to highlight the next expected key.
-        """
         engine = self._engine
         idx = engine.current_index
-
         if idx >= len(self._word_positions):
             return
 
         word_state = engine.current_word_state
-        typed = word_state.typed
+        typed  = word_state.typed
         target = word_state.target
         overflow = len(typed) > len(target)
 
@@ -633,73 +583,61 @@ class TestView(tk.Frame):
         txt = self._word_text
         txt.configure(state=tk.NORMAL)
 
-        # Remove existing colour tags for this word
         word_start, word_end = self._word_positions[idx]
         for tag in ("pending", "correct", "error", "current_word", "cursor_char"):
             txt.tag_remove(tag, word_start, word_end)
 
         if overflow:
-            # Entire word flashes red to indicate over-typing
             txt.tag_add("error", word_start, word_end)
         else:
-            # Per-character correct / incorrect / pending colour
             for j, target_ch in enumerate(target):
-                char_start = f"{start_pos}+{j}c"
-                char_end = f"{start_pos}+{j + 1}c"
+                cs = f"{start_pos}+{j}c"
+                ce = f"{start_pos}+{j + 1}c"
                 if j < len(typed):
                     tag = "correct" if typed[j] == target_ch else "error"
                 else:
                     tag = "pending"
-                txt.tag_add(tag, char_start, char_end)
+                txt.tag_add(tag, cs, ce)
 
-            # Cursor block on the next character the user must type
             cursor_pos = len(typed)
             if cursor_pos < len(target):
-                char_start = f"{start_pos}+{cursor_pos}c"
-                char_end = f"{start_pos}+{cursor_pos + 1}c"
-                txt.tag_add("cursor_char", char_start, char_end)
+                txt.tag_add("cursor_char",
+                            f"{start_pos}+{cursor_pos}c",
+                            f"{start_pos}+{cursor_pos + 1}c")
 
-        # Underline the whole current word
         txt.tag_add("current_word", word_start, word_end)
 
-        # Also colour previously committed words when first advancing past them
         if idx > 0:
             self._colour_committed_word(idx - 1)
 
         txt.configure(state=tk.DISABLED)
-
-        # Update echo bar
         self._typed_var.set(typed)
         self._highlight_current_word()
 
-        # Keyboard: illuminate next expected key
         if overflow:
-            next_key = None          # suggest backspace, no key shown
+            next_key = None
         elif len(typed) < len(target):
             next_key = target[len(typed)]
         else:
-            next_key = " "           # word done — press space to advance
+            next_key = " "
         self._keyboard.set_active_key(next_key)
 
     def _colour_committed_word(self, idx: int) -> None:
-        """Apply final per-character colours to a completed word."""
         if idx >= len(self._word_positions) or idx >= len(self._engine.word_states):
             return
-
         ws = self._engine.word_states[idx]
         start_pos, _ = self._word_positions[idx]
         txt = self._word_text
-
         for j, target_ch in enumerate(ws.target):
-            char_start = f"{start_pos}+{j}c"
-            char_end = f"{start_pos}+{j + 1}c"
+            cs = f"{start_pos}+{j}c"
+            ce = f"{start_pos}+{j + 1}c"
             for tag in ("pending", "current_word"):
-                txt.tag_remove(tag, char_start, char_end)
+                txt.tag_remove(tag, cs, ce)
             if j < len(ws.typed):
                 tag = "correct" if ws.typed[j] == target_ch else "error"
             else:
-                tag = "error"  # typed too short
-            txt.tag_add(tag, char_start, char_end)
+                tag = "error"
+            txt.tag_add(tag, cs, ce)
 
     # ------------------------------------------------------------------
     # Timer loop
@@ -713,11 +651,9 @@ class TestView(tk.Frame):
         if engine.state == TestState.FINISHED:
             self._on_session_finish()
             return
-
         remaining = engine.remaining_seconds
         self._timer_var.set(f"{remaining:.0f}s")
         self._update_stats()
-
         if remaining <= 0:
             self._on_session_finish()
         else:
@@ -758,7 +694,6 @@ class TestView(tk.Frame):
         if result is not None:
             self._app.raise_view("results", result=result)
         else:
-            # Fallback: build result directly if callback missed
             result = engine.build_result()
             self._app.raise_view("results", result=result)
 
@@ -767,4 +702,3 @@ class TestView(tk.Frame):
         self._app.unbind("<Escape>")
         self._app.unbind("<Control-r>")
         self._app.unbind("<Control-R>")
-        

@@ -41,11 +41,12 @@ class App(tk.Tk):
     :param results_repository: ResultsRepository for reading past scores.
     """
 
-    def __init__(self, session_manager, results_repository) -> None:
+    def __init__(self, session_manager, results_repository, settings_manager=None) -> None:
         super().__init__()
 
         self.session_manager = session_manager
         self.results_repository = results_repository
+        self.settings_manager = settings_manager
 
         self._views: dict[str, tk.Frame] = {}
         self._current_view: Optional[str] = None

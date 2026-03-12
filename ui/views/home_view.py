@@ -106,6 +106,63 @@ class HomeView(tk.Frame):
         start_btn.bind("<Enter>", lambda _e: start_btn.configure(bg=ACCENT_HOVER))
         start_btn.bind("<Leave>", lambda _e: start_btn.configure(bg="#3c6ea5"))
 
+        targeted_btn = tk.Button(
+            panel,
+            text="🎯  Targeted Practice",
+            font=(FONT_UI, FONT_BUTTON_SIZE + 1, "bold"),
+            bg="#3c6ea5",
+            fg="#ffffff",
+            activebackground=ACCENT_HOVER,
+            activeforeground="#ffffff",
+            relief=tk.RAISED,
+            bd=BD,
+            cursor="hand2",
+            padx=24,
+            pady=6,
+            command=self._on_targeted_practice,
+        )
+        targeted_btn.pack(pady=(0, 4))
+        targeted_btn.bind("<Enter>", lambda _e: targeted_btn.configure(bg=ACCENT_HOVER))
+        targeted_btn.bind("<Leave>", lambda _e: targeted_btn.configure(bg="#3c6ea5"))
+
+        numpad_btn = tk.Button(
+            panel,
+            text="🔢  Number Pad Practice",
+            font=(FONT_UI, FONT_BUTTON_SIZE + 1, "bold"),
+            bg="#3c6ea5",
+            fg="#ffffff",
+            activebackground=ACCENT_HOVER,
+            activeforeground="#ffffff",
+            relief=tk.RAISED,
+            bd=BD,
+            cursor="hand2",
+            padx=24,
+            pady=6,
+            command=self._on_number_practice,
+        )
+        numpad_btn.pack(pady=(0, 4))
+        numpad_btn.bind("<Enter>", lambda _e: numpad_btn.configure(bg=ACCENT_HOVER))
+        numpad_btn.bind("<Leave>", lambda _e: numpad_btn.configure(bg="#3c6ea5"))
+
+        settings_btn = tk.Button(
+            panel,
+            text="\u2699  Settings",
+            font=(FONT_UI, FONT_BUTTON_SIZE),
+            bg=BG_PANEL,
+            fg=FG_MUTED,
+            activebackground="#4a4a4a",
+            activeforeground=FG_DEFAULT,
+            relief=tk.RAISED,
+            bd=BD,
+            cursor="hand2",
+            padx=24,
+            pady=4,
+            command=self._on_settings,
+        )
+        settings_btn.pack(pady=(6, 0))
+        settings_btn.bind("<Enter>", lambda _e: settings_btn.configure(fg=FG_DEFAULT))
+        settings_btn.bind("<Leave>", lambda _e: settings_btn.configure(fg=FG_MUTED))
+
         tk.Label(
             panel,
             text="Press ESC to quit",
@@ -153,3 +210,12 @@ class HomeView(tk.Frame):
 
     def _on_start(self) -> None:
         self._app.raise_view("test")
+
+    def _on_targeted_practice(self) -> None:
+        self._app.raise_view("target_practice")
+
+    def _on_number_practice(self) -> None:
+        self._app.raise_view("number")
+
+    def _on_settings(self) -> None:
+        self._app.raise_view("settings")

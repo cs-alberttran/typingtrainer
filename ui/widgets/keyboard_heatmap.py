@@ -22,55 +22,79 @@ class KeyboardHeatmap(tk.Frame):
     :param heatmap_data: Optional initial ``{key: error_rate}`` dict.
     """
 
-    _ROWS: list[list[str]] = [
-        list("qwertyuiop"),
-        list("asdfghjkl"),
-        list("zxcvbnm"),
+    # Each entry: (display_text, key_id_or_None, label_width)
+    # key_id=None  →  decorative key, not tracked in heatmap / active highlight
+    _ROWS: list[list[tuple]] = [
+        # ── number row ──────────────────────────────────────────────
+        [("1","1",3),("2","2",3),("3","3",3),("4","4",3),("5","5",3),
+         ("6","6",3),("7","7",3),("8","8",3),("9","9",3),("0","0",3),
+         ("⌫", None, 4)],
+        # ── QWERTY ──────────────────────────────────────────────────
+        [("Q","q",3),("W","w",3),("E","e",3),("R","r",3),("T","t",3),
+         ("Y","y",3),("U","u",3),("I","i",3),("O","o",3),("P","p",3)],
+        # ── ASDF ────────────────────────────────────────────────────
+        [("CAPS",None,5),("A","a",3),("S","s",3),("D","d",3),("F_","f_",3),
+         ("G","g",3),("H","h",3),("_J","_j",3),("K","k",3),("L","l",3),
+         (";",";",3),("'","'",3),("ENTER",None,5)],
+        # ── ZXCV ────────────────────────────────────────────────────
+        [("SHIFT",None,6),("Z","z",3),("X","x",3),("C","c",3),("V","v",3),
+         ("B","b",3),("N","n",3),("M","m",3),(",",",",3),(".",  ".",3),
+         ("/","/",3),("SHIFT",None,5)],
     ]
-
-    # Horizontal pixel offset per row to simulate staggered QWERTY layout
-    _ROW_INDENT: list[int] = [0, 14, 26]
-
+    # Numpad layout: (display, key_id, width) — key_id=None means decorative
+    # + spans rows 1-2 and Enter spans rows 3-4 (handled via grid rowspan in _build_numpad)
+    _NUMPAD_ROWS: list[list[tuple]] = [
+        [("Tab", None, 5), ("/", "/", 4), ("*", "*", 4), ("-", "-", 4)],
+        [("7", "7", 4), ("8", "8", 4), ("9", "9", 4)],
+        [("4", "4", 4), ("5", "5", 4), ("6", "6", 4)],
+        [("1", "1", 4), ("2", "2", 4), ("3", "3", 4)],
+        [("0", "0", 9), (".", ".", 4)],
+    ]
     def __init__(
         self,
         master: tk.Widget,
         heatmap_data: Optional[dict[str, float]] = None,
+        key_size: int = 13,
+        mode: str = "keyboard",
         **kwargs,
     ) -> None:
         super().__init__(master, bg=BG_KEY, **kwargs)
         self._heatmap_data: dict[str, float] = heatmap_data or {}
         self._key_labels: dict[str, tk.Label] = {}
         self._active_key: Optional[str] = None
-        self._build_keyboard()
+        self._key_size: int = key_size
+        if mode == "numpad":
+            self._build_numpad()
+        else:
+            self._build_keyboard()
 
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
 
     def _build_keyboard(self) -> None:
-        for row_idx, row in enumerate(self._ROWS):
+        for row in self._ROWS:
             row_frame = tk.Frame(self, bg=BG_KEY)
             row_frame.pack(anchor="center", pady=3)
 
-            indent = self._ROW_INDENT[row_idx]
-            if indent:
-                tk.Frame(row_frame, width=indent * 3, bg=BG_KEY).pack(side=tk.LEFT)
-
-            for key in row:
+            for display, key_id, width in row:
+                is_special = key_id is None
+                _pady = max(2, int(8 * self._key_size / 13))
                 lbl = tk.Label(
                     row_frame,
-                    text=key.upper(),
-                    font=(FONT_UI, 13, "bold"),
-                    width=3,
+                    text=display,
+                    font=(FONT_UI, max(7, int(self._key_size * 0.80)) if is_special else self._key_size, "bold" if not is_special else "normal"),
+                    width=width,
                     relief=tk.RAISED,
                     bd=BD,
                     bg=BG_KEY,
-                    fg="#1a1a1a",
+                    fg="#777777" if is_special else "#1a1a1a",
                     padx=4,
-                    pady=8,
+                    pady=_pady,
                 )
                 lbl.pack(side=tk.LEFT, padx=2)
-                self._key_labels[key] = lbl
+                if key_id is not None:
+                    self._key_labels[key_id] = lbl
 
         # Space bar
         space_frame = tk.Frame(self, bg=BG_KEY)
@@ -78,16 +102,69 @@ class KeyboardHeatmap(tk.Frame):
         space_lbl = tk.Label(
             space_frame,
             text="SPACE",
-            font=(FONT_UI, 11),
+            font=(FONT_UI, max(7, int(self._key_size * 0.85))),
             width=20,
             relief=tk.RAISED,
             bd=BD,
             bg=BG_KEY,
             fg="#555555",
-            pady=8,
+            pady=max(2, int(8 * self._key_size / 13)),
         )
         space_lbl.pack()
         self._key_labels[" "] = space_lbl
+
+    def _build_numpad(self) -> None:
+        _pady = max(2, int(8 * self._key_size / 13))
+        _padx = 2
+
+        grid_frame = tk.Frame(self, bg=BG_KEY)
+        grid_frame.pack(anchor="center", pady=3)
+
+        def _make_key(text: str, key_id, width: int) -> tk.Label:
+            is_special = key_id is None
+            lbl = tk.Label(
+                grid_frame,
+                text=text,
+                font=(FONT_UI, max(7, int(self._key_size * 0.80)) if is_special else self._key_size,
+                      "bold" if not is_special else "normal"),
+                width=width,
+                relief=tk.RAISED,
+                bd=BD,
+                bg=BG_KEY,
+                fg="#777777" if is_special else "#1a1a1a",
+                padx=4,
+                pady=_pady,
+            )
+            if key_id is not None:
+                self._key_labels[key_id] = lbl
+            return lbl
+
+        # Row 0: Tab, /, *, -
+        _make_key("Tab", None, 5).grid(row=0, column=0, padx=_padx, pady=3, sticky="nsew")
+        _make_key("/",   "/",  4).grid(row=0, column=1, padx=_padx, pady=3, sticky="nsew")
+        _make_key("*",   "*",  4).grid(row=0, column=2, padx=_padx, pady=3, sticky="nsew")
+        _make_key("-",   "-",  4).grid(row=0, column=3, padx=_padx, pady=3, sticky="nsew")
+
+        # Row 1: 7, 8, 9  |  + tall (spans rows 1-2)
+        _make_key("7", "7", 4).grid(row=1, column=0, padx=_padx, pady=3, sticky="nsew")
+        _make_key("8", "8", 4).grid(row=1, column=1, padx=_padx, pady=3, sticky="nsew")
+        _make_key("9", "9", 4).grid(row=1, column=2, padx=_padx, pady=3, sticky="nsew")
+        _make_key("+", "+", 4).grid(row=1, column=3, rowspan=2, padx=_padx, pady=3, sticky="nsew")
+
+        # Row 2: 4, 5, 6
+        _make_key("4", "4", 4).grid(row=2, column=0, padx=_padx, pady=3, sticky="nsew")
+        _make_key("5", "5", 4).grid(row=2, column=1, padx=_padx, pady=3, sticky="nsew")
+        _make_key("6", "6", 4).grid(row=2, column=2, padx=_padx, pady=3, sticky="nsew")
+
+        # Row 3: 1, 2, 3  |  Enter tall (spans rows 3-4)
+        _make_key("1", "1", 4).grid(row=3, column=0, padx=_padx, pady=3, sticky="nsew")
+        _make_key("2", "2", 4).grid(row=3, column=1, padx=_padx, pady=3, sticky="nsew")
+        _make_key("3", "3", 4).grid(row=3, column=2, padx=_padx, pady=3, sticky="nsew")
+        _make_key("ENTER", "enter", 4).grid(row=3, column=3, rowspan=2, padx=_padx, pady=3, sticky="nsew")
+
+        # Row 4: 0 wide (spans cols 0-1), .
+        _make_key("0", "0", 9).grid(row=4, column=0, columnspan=2, padx=_padx, pady=3, sticky="nsew")
+        _make_key(".", ".", 4).grid(row=4, column=2, padx=_padx, pady=3, sticky="nsew")
 
     # ------------------------------------------------------------------
     # Live key highlighting

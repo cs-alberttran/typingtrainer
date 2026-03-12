@@ -14,6 +14,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 BASE_DIR: Path = Path(__file__).parent
 WORDS_FILE: Path = BASE_DIR / "words.txt"
+GRAMS_FILE: Path = BASE_DIR / "grams_list.txt"
+LEFTHAND_FILE: Path = BASE_DIR / "lefthand.txt"
+RIGHTHAND_FILE: Path = BASE_DIR / "righthand.txt"
 DATA_DIR: Path = BASE_DIR / "data"
 RESULTS_FILE: Path = DATA_DIR / "results.json"
 

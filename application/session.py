@@ -55,6 +55,7 @@ class SessionManager:
         self._engine: Optional[TypingEngine] = None
         self._analytics: KeyAnalytics = KeyAnalytics()
         self._result: Optional[SessionResult] = None
+        self._game_mode: str = "typing_test" 
 
     # ------------------------------------------------------------------
     # Session creation
@@ -63,8 +64,9 @@ class SessionManager:
     def new_session(
         self,
         duration: int = DEFAULT_DURATION,
-        game_mode: str = "monkeytype",
+        game_mode: str = "typing_test",
         seed: Optional[int] = None,
+        words: Optional[list] = None,
     ) -> TypingEngine:
         """
         Create and return a fresh TypingEngine, ready to accept keystrokes.
@@ -72,12 +74,15 @@ class SessionManager:
         :param duration: Test length in seconds.
         :param game_mode: Identifier for the current game mode.
         :param seed: Optional RNG seed for reproducible word lists.
+        :param words: Optional explicit word list; bypasses the word provider.
         :returns: The configured TypingEngine (also stored internally).
         """
-        words = self._word_provider.generate(count=WORDS_PER_SESSION, seed=seed)
+        if words is None:
+            words = self._word_provider.generate(count=WORDS_PER_SESSION, seed=seed)
         self._engine = TypingEngine(words=words, duration_seconds=duration)
         self._engine.register_finish_callback(self._handle_finish)
         self._result = None
+        self._game_mode = game_mode
         logger.info("New %s session created (%ds, %d words).", game_mode, duration, len(words))
         return self._engine
 
@@ -113,7 +118,9 @@ class SessionManager:
         """Called by the engine when the timer expires."""
         if self._engine is None:
             return
+        logger.info("Session finished: game_mode=%s", self._game_mode)
         result = self._engine.build_result()
+        result.game_mode = self._game_mode
         self._result = result
 
         # Ingest events into analytics
